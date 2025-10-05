@@ -15,6 +15,8 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/pricing"
+	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -58,6 +60,102 @@ type ErrorResponse struct {
 	Message string `json:"message,omitempty"`
 }
 
+// listOpenAIModels handles GET /openai/models - Return models for each configured provider key.
+// For MVP, we return the union of configured key model allowlists. If a key has an empty models list,
+// we cannot enumerate upstream; we return an empty list (caller can specify model_ids explicitly).
+func (h *ProviderHandler) listOpenAIModels(ctx *fasthttp.RequestCtx) {
+	// If governance is enabled, require/validate VK and derive models from VK.allowed_models
+	if h.store.ClientConfig.EnableGovernance {
+		vk := string(ctx.Request.Header.Peek("x-bf-vk"))
+		if h.store.ClientConfig.EnforceGovernanceHeader && strings.TrimSpace(vk) == "" {
+			SendError(ctx, fasthttp.StatusBadRequest, "x-bf-vk header is missing", h.logger)
+			return
+		}
+		if vk != "" && h.store.ConfigStore != nil {
+			// Use governance store to lookup VK by value
+			gs, err := governance.NewGovernanceStore(h.logger, h.store.ConfigStore, nil)
+			if err == nil && gs != nil {
+				if v, ok := gs.GetVirtualKey(vk); ok && v != nil {
+					// If VK has explicit allowed_models, return exactly those
+					if len(v.AllowedModels) > 0 {
+						data := make([]map[string]interface{}, 0, len(v.AllowedModels))
+						for _, m := range v.AllowedModels {
+							if strings.TrimSpace(m) == "" {
+								continue
+							}
+							data = append(data, map[string]interface{}{
+								"id":       m,
+								"object":   "model",
+								"owned_by": "external",
+							})
+						}
+						SendJSON(ctx, map[string]interface{}{
+							"object": "list",
+							"data":   data,
+						}, h.logger)
+						return
+					}
+					// No explicit allowed_models: fall back to union of configured key model lists (non-empty only)
+					// This avoids over-listing and keeps enumeration bounded by operator configuration
+				}
+			}
+		}
+	}
+
+	// Default behavior (or governance fallback):
+	// 1) If VK missing or VK.allowed_models empty, list models from pricing for configured providers.
+	// 2) If pricing unavailable, union of explicitly configured key model lists (non-empty only).
+	providers, err := h.store.GetAllProviders()
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get providers: %v", err), h.logger)
+		return
+	}
+
+	// Try pricing-derived enumeration first (temporarily disabled until framework version exposes ListModelsForProviders)
+	var pricingModels []string
+
+	modelsSet := map[string]struct{}{}
+	for _, m := range pricingModels {
+		if strings.TrimSpace(m) == "" {
+			continue
+		}
+		modelsSet[m] = struct{}{}
+	}
+
+	if len(modelsSet) == 0 {
+		// Fallback to configured-key union if pricing enumeration is empty
+		for _, p := range providers {
+			cfg, err := h.store.GetProviderConfigRedacted(p)
+			if err != nil {
+				continue
+			}
+			for _, k := range cfg.Keys {
+				// Only use explicitly configured model lists; empty means "all", which we don't enumerate
+				for _, m := range k.Models {
+					if strings.TrimSpace(m) == "" {
+						continue
+					}
+					modelsSet[m] = struct{}{}
+				}
+			}
+		}
+	}
+
+	data := make([]map[string]interface{}, 0, len(modelsSet))
+	for m := range modelsSet {
+		data = append(data, map[string]interface{}{
+			"id":       m,
+			"object":   "model",
+			"owned_by": "external",
+		})
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"object": "list",
+		"data":   data,
+	}, h.logger)
+}
+
 // RegisterRoutes registers all provider management routes
 func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...lib.BifrostHTTPMiddleware) {
 	// Provider CRUD operations
@@ -67,6 +165,9 @@ func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...lib.Bi
 	r.PUT("/api/providers/{provider}", lib.ChainMiddlewares(h.updateProvider, middlewares...))
 	r.DELETE("/api/providers/{provider}", lib.ChainMiddlewares(h.deleteProvider, middlewares...))
 	r.GET("/api/keys", lib.ChainMiddlewares(h.listKeys, middlewares...))
+	// OpenAI-compatible models listing for direct connections from Open WebUI
+	r.GET("/openai/models", lib.ChainMiddlewares(h.listOpenAIModels, middlewares...))
+	r.GET("/openai/v1/models", lib.ChainMiddlewares(h.listOpenAIModels, middlewares...))
 }
 
 // listProviders handles GET /api/providers - List all providers

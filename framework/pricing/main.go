@@ -227,6 +227,41 @@ func (pm *PricingManager) Cleanup() error {
 	return nil
 }
 
+// ListModelsForProviders returns a de-duplicated list of model IDs for the given providers
+// using the in-memory pricing cache. If providers is empty, returns all known models.
+func (pm *PricingManager) ListModelsForProviders(providers []string) []string {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	providerSet := map[string]struct{}{}
+	for _, p := range providers {
+		if p == "" {
+			continue
+		}
+		providerSet[p] = struct{}{}
+	}
+
+	models := make(map[string]struct{})
+	for _, entry := range pm.pricingData {
+		// Filter by providers if provided
+		if len(providerSet) > 0 {
+			if _, ok := providerSet[entry.Provider]; !ok {
+				continue
+			}
+		}
+		if entry.Model == "" {
+			continue
+		}
+		models[entry.Model] = struct{}{}
+	}
+
+	out := make([]string, 0, len(models))
+	for m := range models {
+		out = append(out, m)
+	}
+	return out
+}
+
 // CalculateCostFromUsage calculates cost in dollars using pricing manager and usage data with conditional pricing
 func (pm *PricingManager) CalculateCostFromUsage(provider string, model string, usage *schemas.LLMUsage, requestType schemas.RequestType, isCacheRead bool, isBatch bool, audioSeconds *int, audioTokenDetails *schemas.AudioTokenDetails) float64 {
 	// Allow audio-only flows by only returning early if we have no usage data at all
