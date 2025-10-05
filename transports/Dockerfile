@@ -73,7 +73,8 @@ ENV APP_PORT=$ARG_APP_PORT \
     APP_DIR=$ARG_APP_DIR
 
 
-RUN mkdir -p $APP_DIR/logs && \
+RUN apk add --no-cache ca-certificates curl wget && \
+    mkdir -p $APP_DIR/logs && \
     adduser -D -s /bin/sh appuser && \
     chown -R appuser:appuser /app && \
     chmod +x /app/docker-entrypoint.sh
