@@ -508,7 +508,8 @@ func (s *BifrostHTTPServer) RegisterUIHandler(middlewares ...lib.BifrostHTTPMidd
 	// Register UI handlers
 	// Registering UI handlers
 	// WARNING: This UI handler needs to be registered after all the other handlers
-	NewUIHandler(s.UIContent).RegisterRoutes(s.Router, middlewares...)
+	ui := NewUIHandlerWithDeps(s.UIContent, s.Config, logger)
+	ui.RegisterRoutes(s.Router, middlewares...)
 }
 
 // Bootstrap initializes the Bifrost HTTP server with all necessary components.
@@ -573,7 +574,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	}
 	// Create fasthttp server instance
 	s.Server = &fasthttp.Server{
-		Handler:            CorsMiddleware(s.Config)(TransportInterceptorMiddleware(s.Config)(s.Router.Handler)),
+		Handler:            CorsMiddleware(s.Config)(AdminAuthMiddleware(s.Config, logger)(TransportInterceptorMiddleware(s.Config)(s.Router.Handler))),
 		MaxRequestBodySize: s.Config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024,
 	}
 	return nil

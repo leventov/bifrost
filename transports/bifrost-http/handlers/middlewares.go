@@ -3,7 +3,10 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"strings"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -123,4 +126,113 @@ func TransportInterceptorMiddleware(config *lib.Config) lib.BifrostHTTPMiddlewar
 			next(ctx)
 		}
 	}
+}
+
+// ChainMiddlewares chains multiple middlewares together
+// Middlewares are applied in order: the first middleware wraps the second, etc.
+// This allows earlier middlewares to short-circuit by not calling next(ctx)
+func ChainMiddlewares(handler fasthttp.RequestHandler, middlewares ...lib.BifrostHTTPMiddleware) fasthttp.RequestHandler {
+	// If no middlewares, return the original handler
+	if len(middlewares) == 0 {
+		return handler
+	}
+	// Build the chain from right to left (last middleware wraps the handler)
+	// This ensures execution order is left to right (first middleware executes first)
+	chained := handler
+	for i := len(middlewares) - 1; i >= 0; i-- {
+		chained = middlewares[i](chained)
+	}
+	return chained
+}
+
+// AdminAuthMiddleware protects management APIs and the UI when Bifrost is public.
+// Auth is satisfied if any of the following is true:
+// - Authorization: Bearer <secret> matches configured AdminSecret
+// - Cookie <AdminCookieName> equals the AdminSecret
+//
+// Public endpoints (always allowed):
+// - GET /metrics
+// - POST /v1/* (OpenAI-compatible inference APIs)
+// - POST /openai/* and /openai/v1/* (OpenAI-compatible inference APIs)
+// - GET /openai/models and /openai/v1/models
+// - Static UI assets under /ui/_next/ and /ui/assets/ if login page needs them (we keep UI behind auth except /login)
+// - GET/POST /admin/login (login form)
+// - GET /api/version (safe)
+//
+// On unauthorized browser requests for HTML, this middleware redirects to /admin/login?next=<path>.
+// On API requests (Accept: application/json or X-Requested-With), it returns 401 JSON.
+func AdminAuthMiddleware(config *lib.Config, logger schemas.Logger) lib.BifrostHTTPMiddleware {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			// If no admin secret configured, allow all
+			if strings.TrimSpace(config.AdminSecret) == "" {
+				next(ctx)
+				return
+			}
+
+			method := string(ctx.Method())
+			path := string(ctx.Path())
+
+			// Allowlist public paths
+			if isPublicPath(method, path) {
+				next(ctx)
+				return
+			}
+
+			// Check Authorization header: Bearer <secret>
+			if auth := string(ctx.Request.Header.Peek("Authorization")); auth != "" {
+				if strings.HasPrefix(strings.ToLower(strings.TrimSpace(auth)), "bearer ") {
+					token := strings.TrimSpace(auth[len("Bearer "):])
+					if token == config.AdminSecret {
+						next(ctx)
+						return
+					}
+				}
+			}
+
+			// Check cookie
+			if c := string(ctx.Request.Header.Cookie(config.AdminCookieName)); c != "" && c == config.AdminSecret {
+				next(ctx)
+				return
+			}
+
+			// Unauthorized: decide redirect vs JSON
+			accepts := string(ctx.Request.Header.Peek("Accept"))
+			xrw := string(ctx.Request.Header.Peek("X-Requested-With"))
+			wantsJSON := strings.Contains(strings.ToLower(accepts), "application/json") || strings.EqualFold(xrw, "XMLHttpRequest") || strings.HasPrefix(path, "/api/")
+
+			if wantsJSON || strings.HasPrefix(path, "/v1/") || strings.HasPrefix(path, "/api/") {
+				SendError(ctx, fasthttp.StatusUnauthorized, "admin authentication required", logger)
+				return
+			}
+
+			// Redirect to login with next parameter
+			nextParam := url.QueryEscape(path)
+			ctx.Response.Header.Set("Location", "/admin/login?next="+nextParam)
+			ctx.SetStatusCode(fasthttp.StatusFound)
+		}
+	}
+}
+
+func isPublicPath(method, path string) bool {
+	if path == "/metrics" && method == fasthttp.MethodGet {
+		return true
+	}
+	if strings.HasPrefix(path, "/v1/") && method == fasthttp.MethodPost {
+		return true
+	}
+	// OpenAI-compatible routes under /openai and /openai/v1 should be public for inference
+	if (strings.HasPrefix(path, "/openai/") || strings.HasPrefix(path, "/openai/v1/")) && method == fasthttp.MethodPost {
+		return true
+	}
+	if (path == "/openai/models" || path == "/openai/v1/models") && method == fasthttp.MethodGet {
+		return true
+	}
+	if strings.HasPrefix(path, "/admin/login") { // GET or POST
+		return true
+	}
+	if path == "/api/version" && method == fasthttp.MethodGet {
+		return true
+	}
+	return false
 }

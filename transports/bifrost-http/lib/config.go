@@ -143,6 +143,14 @@ type Config struct {
 
 	// Pricing manager
 	PricingManager *pricing.PricingManager
+
+	// Admin authentication
+	// AdminSecret is a shared secret (password) used to protect management APIs and UI when Bifrost is exposed publicly.
+	// It is sourced from environment variables (BIFROST_ADMIN_PASSWORD or BIFROST_ADMIN_SECRET) at startup.
+	AdminSecret string
+	// AdminCookieName is the name of the cookie used to persist an authenticated admin session.
+	// Defaults to "bf_admin".
+	AdminCookieName string
 }
 
 var DefaultClientConfig = configstore.ClientConfig{
@@ -182,9 +190,16 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		configPath: configFilePath,
 		EnvKeys:    make(map[string][]configstore.EnvKeyInfo),
 		Providers:  make(map[schemas.ModelProvider]configstore.ProviderConfig),
-		Plugins: atomic.Pointer[[]schemas.Plugin]{},
+		Plugins:    atomic.Pointer[[]schemas.Plugin]{},
 	}
-	// Getting absolute path for config file
+	// Initialize admin auth defaults early so they are available regardless of config source.
+	config.AdminCookieName = "bf_admin"
+	if v, ok := os.LookupEnv("BIFROST_ADMIN_PASSWORD"); ok {
+		config.AdminSecret = v
+	} else if v, ok := os.LookupEnv("BIFROST_ADMIN_SECRET"); ok {
+		config.AdminSecret = v
+	}
+
 	absConfigFilePath, err := filepath.Abs(configFilePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get absolute path for config file: %w", err)

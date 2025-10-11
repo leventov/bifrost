@@ -1,6 +1,9 @@
 app = "pd-bifrost"
 primary_region = "sin"
 
+[deploy]
+  ha = false
+
 [build]
   dockerfile = "Dockerfile"
 

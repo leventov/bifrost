@@ -3,6 +3,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -17,7 +19,6 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 
 	// "github.com/maximhq/bifrost/framework/pricing"
-	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -65,7 +66,8 @@ type ErrorResponse struct {
 // For MVP, we return the union of configured key model allowlists. If a key has an empty models list,
 // we cannot enumerate upstream; we return an empty list (caller can specify model_ids explicitly).
 func (h *ProviderHandler) listOpenAIModels(ctx *fasthttp.RequestCtx) {
-	// If governance is enabled, require/validate VK and derive models from VK.allowed_models
+	// If governance is enabled, require/validate VK and derive models from VK.allowed_models first.
+	var providerFilter []string // optional filter of providers derived from VK
 	if h.store.ClientConfig.EnableGovernance {
 		vk := string(ctx.Request.Header.Peek("x-bf-vk"))
 		if h.store.ClientConfig.EnforceGovernanceHeader && strings.TrimSpace(vk) == "" {
@@ -73,17 +75,25 @@ func (h *ProviderHandler) listOpenAIModels(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		if vk != "" && h.store.ConfigStore != nil {
-			// Use governance store to lookup VK by value
-			gs, err := governance.NewGovernanceStore(h.logger, h.store.ConfigStore, nil)
-			if err == nil && gs != nil {
-				if v, ok := gs.GetVirtualKey(vk); ok && v != nil {
-					// If VK has explicit allowed_models, return exactly those
-					if len(v.AllowedModels) > 0 {
-						data := make([]map[string]interface{}, 0, len(v.AllowedModels))
-						for _, m := range v.AllowedModels {
-							if strings.TrimSpace(m) == "" {
+			opCtx := context.Background()
+			vkRow, err := h.store.ConfigStore.GetVirtualKeyByValue(opCtx, vk)
+			if err == nil && vkRow != nil {
+				providerCfgs, err2 := h.store.ConfigStore.GetVirtualKeyProviderConfigs(opCtx, vkRow.ID)
+				if err2 == nil {
+					allowed := map[string]struct{}{}
+					for _, pc := range providerCfgs {
+						// collect allowed models (if any)
+						for _, m := range pc.AllowedModels {
+							mm := strings.TrimSpace(m)
+							if mm == "" {
 								continue
 							}
+							allowed[mm] = struct{}{}
+						}
+					}
+					if len(allowed) > 0 {
+						data := make([]map[string]interface{}, 0, len(allowed))
+						for m := range allowed {
 							data = append(data, map[string]interface{}{
 								"id":       m,
 								"object":   "model",
@@ -96,36 +106,71 @@ func (h *ProviderHandler) listOpenAIModels(ctx *fasthttp.RequestCtx) {
 						}, h.logger)
 						return
 					}
-					// No explicit allowed_models: fall back to union of configured key model lists (non-empty only)
-					// This avoids over-listing and keeps enumeration bounded by operator configuration
+					// No explicit allowed models → restrict enumeration to VK's providers (proxy-all semantics)
+					if len(providerCfgs) > 0 {
+						for _, pc := range providerCfgs {
+							p := strings.TrimSpace(pc.Provider)
+							if p != "" {
+								providerFilter = append(providerFilter, p)
+							}
+						}
+					}
 				}
 			}
 		}
 	}
 
 	// Default behavior (or governance fallback):
-	// 1) If VK missing or VK.allowed_models empty, list models from pricing for configured providers.
-	// 2) If pricing unavailable, union of explicitly configured key model lists (non-empty only).
-	providers, err := h.store.GetAllProviders()
+	// 1) Enumerate from pricing for filtered providers (or all configured providers).
+	// 2) Augment with dynamic OpenRouter enumeration when OpenRouter is allowed/configured.
+	// 3) If still empty, fall back to union of explicitly configured key model lists (non-empty only).
+	configuredProviders, err := h.store.GetAllProviders()
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get providers: %v", err), h.logger)
 		return
 	}
 
-	// Try pricing-derived enumeration first (temporarily disabled until framework version exposes ListModelsForProviders)
-	var pricingModels []string
-
-	modelsSet := map[string]struct{}{}
-	for _, m := range pricingModels {
-		if strings.TrimSpace(m) == "" {
-			continue
+	// Build list of providers to consider
+	providersToUse := []string{}
+	if len(providerFilter) > 0 {
+		providersToUse = append(providersToUse, providerFilter...)
+	} else {
+		for _, p := range configuredProviders {
+			providersToUse = append(providersToUse, string(p))
 		}
-		modelsSet[m] = struct{}{}
 	}
 
+	// Initialize set; we avoid using pricing for now to keep compatibility across framework versions
+	modelsSet := map[string]struct{}{}
+
+	// Augment with dynamic OpenRouter enumeration if openrouter is included in providersToUse
+	hasOpenRouter := slices.ContainsFunc(providersToUse, func(s string) bool { return s == string(schemas.OpenRouter) })
+	if hasOpenRouter {
+		// opCtx separate from request context; enumeration is backend-only
+		opCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		orModels := h.fetchOpenRouterModels(opCtx)
+		for _, m := range orModels {
+			if strings.TrimSpace(m) == "" {
+				continue
+			}
+			modelsSet[m] = struct{}{}
+		}
+	}
+
+	// If still empty, fallback to configured-key union for selected providers only
 	if len(modelsSet) == 0 {
-		// Fallback to configured-key union if pricing enumeration is empty
-		for _, p := range providers {
+		providerAllowed := map[string]struct{}{}
+		for _, p := range providersToUse {
+			providerAllowed[p] = struct{}{}
+		}
+		for _, p := range configuredProviders {
+			// Respect provider filter when present
+			if len(providerAllowed) > 0 {
+				if _, ok := providerAllowed[string(p)]; !ok {
+					continue
+				}
+			}
 			cfg, err := h.store.GetProviderConfigRedacted(p)
 			if err != nil {
 				continue
@@ -169,6 +214,79 @@ func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...lib.Bi
 	// OpenAI-compatible models listing for direct connections from Open WebUI
 	r.GET("/openai/models", lib.ChainMiddlewares(h.listOpenAIModels, middlewares...))
 	r.GET("/openai/v1/models", lib.ChainMiddlewares(h.listOpenAIModels, middlewares...))
+}
+
+// fetchOpenRouterModels queries OpenRouter's /v1/models using the configured provider key
+// and returns a list of model IDs. Returns empty slice on any failure.
+func (h *ProviderHandler) fetchOpenRouterModels(_ context.Context) []string {
+	// Get raw (non-redacted) provider config to access actual API key and network headers
+	cfg, err := h.store.GetProviderConfigRaw(schemas.OpenRouter)
+	if err != nil || cfg == nil {
+		return []string{}
+	}
+	// Select the first available key with a non-empty value
+	var apiKey string
+	for _, k := range cfg.Keys {
+		if v := strings.TrimSpace(k.Value); v != "" {
+			apiKey = v
+			break
+		}
+	}
+	if apiKey == "" {
+		return []string{}
+	}
+
+	baseURL := "https://openrouter.ai/api"
+	if cfg.NetworkConfig != nil && strings.TrimSpace(cfg.NetworkConfig.BaseURL) != "" {
+		baseURL = strings.TrimRight(cfg.NetworkConfig.BaseURL, "/")
+	}
+	endpoint := baseURL + "/v1/models"
+
+	client := &fasthttp.Client{
+		ReadTimeout:  8 * time.Second,
+		WriteTimeout: 8 * time.Second,
+	}
+
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodGet)
+	req.SetRequestURI(endpoint)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Accept", "application/json")
+	if cfg.NetworkConfig != nil && cfg.NetworkConfig.ExtraHeaders != nil {
+		for k, v := range cfg.NetworkConfig.ExtraHeaders {
+			if strings.TrimSpace(k) != "" && strings.TrimSpace(v) != "" {
+				req.Header.Set(k, v)
+			}
+		}
+	}
+
+	var resp fasthttp.Response
+	if err := client.Do(&req, &resp); err != nil {
+		h.logger.Debug("openrouter models request failed: %v", err)
+		return []string{}
+	}
+	if resp.StatusCode() != fasthttp.StatusOK {
+		h.logger.Debug("openrouter models status %d", resp.StatusCode())
+		return []string{}
+	}
+
+	var parsed struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(resp.Body(), &parsed); err != nil {
+		h.logger.Debug("openrouter models parse error: %v", err)
+		return []string{}
+	}
+	out := make([]string, 0, len(parsed.Data))
+	for _, m := range parsed.Data {
+		id := strings.TrimSpace(m.ID)
+		if id != "" {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // listProviders handles GET /api/providers - List all providers
