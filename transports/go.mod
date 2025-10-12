@@ -22,6 +22,17 @@ require (
 	gorm.io/gorm v1.31.0
 )
 
+replace (
+    github.com/maximhq/bifrost/core => ./core
+    github.com/maximhq/bifrost/framework => ./framework
+    github.com/maximhq/bifrost/plugins/governance => ./plugins/governance
+    github.com/maximhq/bifrost/plugins/logging => ./plugins/logging
+    github.com/maximhq/bifrost/plugins/maxim => ./plugins/maxim
+    github.com/maximhq/bifrost/plugins/otel => ./plugins/otel
+    github.com/maximhq/bifrost/plugins/semanticcache => ./plugins/semanticcache
+    github.com/maximhq/bifrost/plugins/telemetry => ./plugins/telemetry
+)
+
 require (
 	cloud.google.com/go/compute/metadata v0.8.0 // indirect
 	github.com/andybalholm/brotli v1.2.0 // indirect

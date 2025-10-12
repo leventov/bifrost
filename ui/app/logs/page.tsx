@@ -21,7 +21,7 @@ export default function LogsPage() {
 	const [fetchingLogs, setFetchingLogs] = useState(false); // on pagination/filters change
 	const [error, setError] = useState<string | null>(null);
 	const [showEmptyState, setShowEmptyState] = useState(false);
-	const user = useAppSelector((state) => state.user?.currentUser);
+	const user = useAppSelector((state) => state.app.currentUser);
 
 	console.log("user", user);
 
