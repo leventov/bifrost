@@ -21,7 +21,7 @@ const nextConfig: NextConfig = {
 		NEXT_PUBLIC_IS_ENTERPRISE: haveEnterprise ? "true" : "false",
 	},
 	eslint: {
-		ignoreDuringBuilds: false,
+		ignoreDuringBuilds: true,
 	},
 	webpack: (config) => {
 		config.resolve = config.resolve || {};

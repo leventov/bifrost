@@ -1,5 +1,4 @@
 import { fixupConfigRules } from "@eslint/compat";
-import eslintPluginImport from "eslint-plugin-import";
 import { FlatCompat } from "@eslint/eslintrc";
 import js from "@eslint/js";
 import typescriptEslintEslintPlugin from "@typescript-eslint/eslint-plugin";
@@ -18,15 +17,16 @@ const compat = new FlatCompat({
 });
 
 const eslintConfig = [
-	...fixupConfigRules(compat.extends("next/core-web-vitals", "next", "prettier")),
-	{
-		plugins: {
-			prettier: eslintPluginPrettier,
-			"@typescript-eslint": typescriptEslintEslintPlugin,
-			"unused-imports": eslintPluginUnusedImports,
-			import: eslintPluginImport,
-		},
-	},
+    // Load Next configs first so bundled plugins (like 'import') are registered once
+    ...fixupConfigRules(compat.extends("next/core-web-vitals", "next", "prettier")),
+    {
+        plugins: {
+            prettier: eslintPluginPrettier,
+            "@typescript-eslint": typescriptEslintEslintPlugin,
+            "unused-imports": eslintPluginUnusedImports,
+            // Do NOT re-register 'import' here; Next's preset already includes it
+        },
+    },
 	{
 		languageOptions: {
 			parser: typescriptEslintParser,

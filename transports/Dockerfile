@@ -27,10 +27,18 @@ ENV CGO_ENABLED=1 GOOS=linux
 COPY transports/go.mod transports/go.sum ./
 RUN ls
 RUN cat go.mod
-RUN go mod download
 
 # Copy source code and dependencies
+# Copy local module replacements for core, framework, and plugins into builder context
+COPY core ./core
+COPY framework ./framework
+COPY plugins ./plugins
+
 COPY transports/ ./
+
+# Now that local replacements are present, download modules
+RUN go mod download && \
+    go mod download github.com/maximhq/maxim-go@v0.1.13
 
 COPY --from=ui-builder /app/out ./bifrost-http/ui
 
