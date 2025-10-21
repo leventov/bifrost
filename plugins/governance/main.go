@@ -154,6 +154,7 @@ func (p *GovernancePlugin) GetName() string {
 // TransportInterceptor intercepts requests before they are processed (governance decision point)
 func (p *GovernancePlugin) TransportInterceptor(url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error) {
 	var virtualKeyValue string
+	var traceID string
 
 	for header, value := range headers {
 		if strings.ToLower(string(header)) == "x-bf-vk" {
@@ -161,17 +162,33 @@ func (p *GovernancePlugin) TransportInterceptor(url string, headers map[string]s
 			break
 		}
 	}
+	// Capture correlation id if present
+	for header, value := range headers {
+		if strings.ToLower(string(header)) == "x-bf-trace-id" {
+			traceID = string(value)
+			break
+		}
+	}
 	if virtualKeyValue == "" {
+		if p.logger != nil && traceID != "" {
+			p.logger.Info("gov:intercept no-vk", map[string]any{"cid": traceID})
+		}
 		return headers, body, nil
 	}
 
 	// Check if the request has a model field
 	modelValue, hasModel := body["model"]
 	if !hasModel {
+		if p.logger != nil && traceID != "" {
+			p.logger.Info("gov:intercept no-model", map[string]any{"cid": traceID})
+		}
 		return headers, body, nil
 	}
 	modelStr, ok := modelValue.(string)
 	if !ok || modelStr == "" {
+		if p.logger != nil && traceID != "" {
+			p.logger.Info("gov:intercept empty-model", map[string]any{"cid": traceID})
+		}
 		return headers, body, nil
 	}
 
@@ -182,15 +199,24 @@ func (p *GovernancePlugin) TransportInterceptor(url string, headers map[string]s
 		// assume the prefixed model should be left unchanged.
 		if p.inMemoryStore != nil {
 			if _, ok := p.inMemoryStore.GetConfiguredProviders()[provider]; ok {
+				if p.logger != nil && traceID != "" {
+					p.logger.Info("gov:intercept prefixed-ok", map[string]any{"cid": traceID, "model": modelStr})
+				}
 				return headers, body, nil
 			}
 		} else {
+			if p.logger != nil && traceID != "" {
+				p.logger.Info("gov:intercept prefixed-no-store", map[string]any{"cid": traceID, "model": modelStr})
+			}
 			return headers, body, nil
 		}
 	}
 
 	virtualKey, ok := p.store.GetVirtualKey(virtualKeyValue)
 	if !ok || virtualKey == nil || !virtualKey.IsActive {
+		if p.logger != nil && traceID != "" {
+			p.logger.Info("gov:intercept vk-inactive", map[string]any{"cid": traceID, "vk": virtualKeyValue})
+		}
 		return headers, body, nil
 	}
 
@@ -198,6 +224,9 @@ func (p *GovernancePlugin) TransportInterceptor(url string, headers map[string]s
 	providerConfigs := virtualKey.ProviderConfigs
 	if len(providerConfigs) == 0 {
 		// No provider configs, continue without modification
+		if p.logger != nil && traceID != "" {
+			p.logger.Info("gov:intercept no-provider-configs", map[string]any{"cid": traceID, "model": modelStr})
+		}
 		return headers, body, nil
 	}
 	allowedProviderConfigs := make([]configstore.TableVirtualKeyProviderConfig, 0)
@@ -208,6 +237,9 @@ func (p *GovernancePlugin) TransportInterceptor(url string, headers map[string]s
 	}
 	if len(allowedProviderConfigs) == 0 {
 		// No allowed provider configs, continue without modification
+		if p.logger != nil && traceID != "" {
+			p.logger.Info("gov:intercept no-allowed-providers", map[string]any{"cid": traceID, "model": modelStr})
+		}
 		return headers, body, nil
 	}
 	// Weighted random selection from allowed providers for the main model
@@ -233,6 +265,9 @@ func (p *GovernancePlugin) TransportInterceptor(url string, headers map[string]s
 	}
 	// Update the model field in the request body
 	body["model"] = string(selectedProvider) + "/" + modelStr
+	if p.logger != nil {
+		p.logger.Info("gov:intercept routed", map[string]any{"cid": traceID, "model_before": modelStr, "model_after": body["model"]})
+	}
 
 	// Check if fallbacks field is already present
 	_, hasFallbacks := body["fallbacks"]

@@ -230,6 +230,19 @@ func handleOpenAITextCompletionStreaming(
 	// Create HTTP request for streaming
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(jsonBody))
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+					Message: schemas.ErrRequestCancelled,
+					Error:   err,
+				},
+			}
+		}
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, newBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
+		}
 		return nil, newBifrostOperationError(schemas.ErrProviderRequest, err, providerName)
 	}
 
@@ -457,10 +470,16 @@ func handleOpenAIChatCompletionRequest(
 	req.Header.SetContentType("application/json")
 	req.Header.Set("Authorization", "Bearer "+key.Value)
 
+	// Propagate correlation id if present in context
+	if cid := getTraceIDFromContext(ctx); cid != "" {
+		req.Header.Set("x-bf-trace-id", cid)
+		logger.Info("provider:request", map[string]any{"cid": cid, "provider": providerName, "url": url, "model": request.Model})
+	}
+
 	req.SetBody(jsonBody)
 
 	// Make request
-	latency, bifrostErr := makeRequestWithContext(ctx, client, req, resp)
+	_, bifrostErr := makeRequestWithContext(ctx, client, req, resp)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -468,7 +487,13 @@ func handleOpenAIChatCompletionRequest(
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
-		return nil, parseOpenAIError(resp)
+		bErr := parseOpenAIError(resp)
+		if bErr != nil {
+			bErr.ExtraFields.Provider = providerName
+			bErr.ExtraFields.ModelRequested = request.Model
+			bErr.ExtraFields.RequestType = schemas.ChatCompletionRequest
+		}
+		return nil, bErr
 	}
 
 	responseBody := resp.Body()
@@ -479,22 +504,25 @@ func handleOpenAIChatCompletionRequest(
 	response := &schemas.BifrostResponse{}
 
 	// Use enhanced response handler with pre-allocated response
-	rawResponse, bifrostErr := handleProviderResponse(responseBody, response, sendBackRawResponse)
+	_, bifrostErr = handleProviderResponse(responseBody, response, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
-	// Set raw response if enabled
-	if sendBackRawResponse {
-		response.ExtraFields.RawResponse = rawResponse
-	}
-
-	response.ExtraFields.Provider = providerName
-	response.ExtraFields.ModelRequested = request.Model
-	response.ExtraFields.RequestType = schemas.ChatCompletionRequest
-	response.ExtraFields.Latency = latency.Milliseconds()
-
 	return response, nil
+}
+
+// getTraceIDFromContext tries to extract a correlation id propagated by the HTTP layer.
+func getTraceIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if v := ctx.Value(schemas.BifrostContextKey("x-bf-trace-id")); v != nil {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
 }
 
 func (provider *OpenAIProvider) Responses(ctx context.Context, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {

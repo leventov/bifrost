@@ -403,6 +403,12 @@ func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Correlation id logging
+	cid := string(ctx.Request.Header.Peek("x-bf-trace-id"))
+	if h.logger != nil {
+		h.logger.Info("chat:start", map[string]any{"cid": cid, "provider": provider, "model": modelName, "stream": req.Stream})
+	}
+
 	if req.Stream != nil && *req.Stream {
 		h.handleStreamingChatCompletion(ctx, bifrostChatReq, bifrostCtx)
 		return

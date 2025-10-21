@@ -128,6 +128,11 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) *co
 			bifrostCtx = context.WithValue(bifrostCtx, governance.ContextKey(keyStr), string(value))
 			return true
 		}
+		// Correlation id header
+		if keyStr == "x-bf-trace-id" {
+			bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKey("x-bf-trace-id"), string(value))
+			return true
+		}
 		// Handle virtual key header (x-bf-vk)
 		if keyStr == "x-bf-vk" {
 			// Store under both governance and core schema keys for compatibility
@@ -231,7 +236,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) *co
 				Weight: 1.0,        // Default weight
 			}
 			bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKeyDirectKey, key)
-		}		
+		}
 	}
 	// Adding fallback context
 	if ctx.UserValue(schemas.BifrostContextKey("x-litellm-fallback")) != nil {
