@@ -33,8 +33,8 @@ fix_permissions() {
     fi
 }
 
-# Fix permissions before starting the application
-fix_permissions
+# Fix permissions only if using a writable app dir (kept for compatibility; Postgres mode does not rely on local files)
+fix_permissions || true
 
 # Parse command line arguments and set environment variables
 parse_args() {
@@ -71,6 +71,39 @@ parse_args() {
 if [ $# -gt 1 ]; then
     parse_args "$@"
 fi
+
+# If Postgres env vars are present, generate config.json for Postgres-backed stores
+generate_config_if_needed() {
+    if [ -n "$BIFROST_DB_HOST" ] && [ -n "$BIFROST_DB_USER" ] && [ -n "$BIFROST_DB_PASSWORD" ]; then
+        mkdir -p "$APP_DIR"
+        cat >"$APP_DIR/config.json" <<JSON
+{
+  "client": {
+    "enable_governance": true,
+    "enforce_governance_header": true,
+    "allow_direct_keys": false
+  },
+  "config_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "${BIFROST_DB_HOST}",
+      "port": "${BIFROST_DB_PORT:-5432}",
+      "user": "${BIFROST_DB_USER}",
+      "password": "${BIFROST_DB_PASSWORD}",
+      "db_name": "${BIFROST_DB_NAME:-postgres}",
+      "ssl_mode": "${BIFROST_DB_SSLMODE:-disable}"
+    }
+  },
+  "logs_store": {
+    "enabled": false
+  }
+}
+JSON
+    fi
+}
+
+generate_config_if_needed
 
 # Build the command with environment variables and standard arguments
 exec /app/main -app-dir "$APP_DIR" -port "$APP_PORT" -host "$APP_HOST" -log-level "$LOG_LEVEL" -log-style "$LOG_STYLE"

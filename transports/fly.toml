@@ -10,6 +10,10 @@ primary_region = "sin"
 [env]
   APP_HOST = "0.0.0.0"
   APP_DIR = "/app/data"
+  # Postgres-backed defaults
+  BIFROST_DB_PORT = "5432"
+  BIFROST_DB_NAME = "postgres"
+  BIFROST_DB_SSLMODE = "disable"
 
 [http_service]
   internal_port = 8080
@@ -22,8 +26,4 @@ primary_region = "sin"
   cpu_kind = "shared"
   cpus = 2
   memory_mb = 512
-
-[[mounts]]
-  source = "data"
-  destination = "/app/data"
 
