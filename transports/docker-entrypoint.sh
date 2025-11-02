@@ -74,7 +74,33 @@ fi
 
 # If Postgres env vars are present, generate config.json for Postgres-backed stores
 generate_config_if_needed() {
-    if [ -n "$BIFROST_DB_HOST" ] && [ -n "$BIFROST_DB_USER" ] && [ -n "$BIFROST_DB_PASSWORD" ]; then
+    if [ -n "$BIFROST_PG_PASSWORD" ]; then
+        mkdir -p "$APP_DIR"
+        cat >"$APP_DIR/config.json" <<JSON
+{
+  "client": {
+    "enable_governance": true,
+    "enforce_governance_header": true,
+    "allow_direct_keys": false
+  },
+  "config_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "/var/lib/postgresql/data/run",
+      "port": "5432",
+      "user": "bifrost",
+      "password": "${BIFROST_PG_PASSWORD}",
+      "db_name": "postgres",
+      "ssl_mode": "disable"
+    }
+  },
+  "logs_store": {
+    "enabled": false
+  }
+}
+JSON
+    elif [ -n "$BIFROST_DB_HOST" ] && [ -n "$BIFROST_DB_USER" ] && [ -n "$BIFROST_DB_PASSWORD" ]; then
         mkdir -p "$APP_DIR"
         cat >"$APP_DIR/config.json" <<JSON
 {

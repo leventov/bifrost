@@ -3,11 +3,11 @@ FROM node:24-alpine3.22 AS ui-builder
 WORKDIR /app
 
 # Copy UI package files and install dependencies
-COPY ui/package*.json ./
+COPY bifrost/ui/package*.json ./
 RUN npm ci
 
 # Copy UI source code
-COPY ui/ ./
+COPY bifrost/ui/ ./
 
 # Build UI (skip the copy-build step)
 RUN npx next build
@@ -24,17 +24,17 @@ RUN apk add --no-cache upx gcc musl-dev sqlite-dev
 # Set environment for CGO-enabled build (required for go-sqlite3)
 ENV CGO_ENABLED=1 GOOS=linux
 
-COPY transports/go.mod transports/go.sum ./
+COPY bifrost/transports/go.mod bifrost/transports/go.sum ./
 RUN ls
 RUN cat go.mod
 
 # Copy source code and dependencies
 # Copy local module replacements for core, framework, and plugins into builder context
-COPY core ./core
-COPY framework ./framework
-COPY plugins ./plugins
+COPY bifrost/core ./core
+COPY bifrost/framework ./framework
+COPY bifrost/plugins ./plugins
 
-COPY transports/ ./
+COPY bifrost/transports/ ./
 
 # Now that local replacements are present, download modules
 RUN go mod download && \
@@ -81,7 +81,7 @@ ENV APP_PORT=$ARG_APP_PORT \
     APP_DIR=$ARG_APP_DIR
 
 
-RUN apk add --no-cache ca-certificates curl wget && \
+RUN apk add --no-cache ca-certificates curl wget util-linux coreutils && \
     mkdir -p $APP_DIR/logs && \
     adduser -D -s /bin/sh appuser && \
     chown -R appuser:appuser /app && \
