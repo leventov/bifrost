@@ -653,6 +653,12 @@ func (s *BifrostHTTPServer) RegisterRoutes(ctx context.Context, middlewares ...l
 		middlewaresWithTelemetry = middlewares
 	}
 
+	// Admin middleware (opt-in via env BIFROST_ADMIN_PASSWORD)
+	adminMiddlewares := middlewares
+	if mw := handlers.AdminAuthMiddleware(s.Config); mw != nil {
+		adminMiddlewares = append(adminMiddlewares, mw)
+	}
+
 	// Chaining all middlewares
 	// lib.ChainMiddlewares chains multiple middlewares together
 	// Initialize
@@ -664,30 +670,34 @@ func (s *BifrostHTTPServer) RegisterRoutes(ctx context.Context, middlewares ...l
 	configHandler := handlers.NewConfigHandler(s, s.Config)
 	pluginsHandler := handlers.NewPluginsHandler(s, s.Config.ConfigStore)
 	sessionHandler := handlers.NewSessionHandler(s.Config.ConfigStore)
+
 	// Register all handler routes
+	// Data plane routes
 	healthHandler.RegisterRoutes(s.Router, middlewares...)
-	providerHandler.RegisterRoutes(s.Router, middlewares...)
 	inferenceHandler.RegisterRoutes(s.Router, middlewaresWithTelemetry...)
-	mcpHandler.RegisterRoutes(s.Router, middlewares...)
 	integrationHandler.RegisterRoutes(s.Router, middlewaresWithTelemetry...)
-	configHandler.RegisterRoutes(s.Router, middlewares...)
-	if pluginsHandler != nil {
-		pluginsHandler.RegisterRoutes(s.Router, middlewares...)
-	}
 	if sessionHandler != nil {
 		sessionHandler.RegisterRoutes(s.Router, middlewares...)
 	}
+
+	// Admin/management routes
+	providerHandler.RegisterRoutes(s.Router, adminMiddlewares...)
+	mcpHandler.RegisterRoutes(s.Router, adminMiddlewares...)
+	configHandler.RegisterRoutes(s.Router, adminMiddlewares...)
+	if pluginsHandler != nil {
+		pluginsHandler.RegisterRoutes(s.Router, adminMiddlewares...)
+	}
 	if cacheHandler != nil {
-		cacheHandler.RegisterRoutes(s.Router, middlewares...)
+		cacheHandler.RegisterRoutes(s.Router, adminMiddlewares...)
 	}
 	if governanceHandler != nil {
-		governanceHandler.RegisterRoutes(s.Router, middlewares...)
+		governanceHandler.RegisterRoutes(s.Router, adminMiddlewares...)
 	}
 	if loggingHandler != nil {
-		loggingHandler.RegisterRoutes(s.Router, middlewares...)
+		loggingHandler.RegisterRoutes(s.Router, adminMiddlewares...)
 	}
 	if s.WebSocketHandler != nil {
-		s.WebSocketHandler.RegisterRoutes(s.Router, middlewares...)
+		s.WebSocketHandler.RegisterRoutes(s.Router, adminMiddlewares...)
 	}
 
 	// Add Prometheus /metrics endpoint
@@ -709,9 +719,9 @@ func (s *BifrostHTTPServer) RegisterRoutes(ctx context.Context, middlewares ...l
 
 // RegisterUIHandler registers the UI handler with the specified router
 func (s *BifrostHTTPServer) RegisterUIHandler(middlewares ...lib.BifrostHTTPMiddleware) {
-	// Register UI handlers
-	// Registering UI handlers
-	// WARNING: This UI handler needs to be registered after all the other handlers
+	// WARNING: Register admin auth routes before UI catch-all
+	handlers.RegisterAdminAuthRoutes(s.Router, s.Config)
+	// This UI handler needs to be registered after all the other handlers
 	handlers.NewUIHandler(s.UIContent).RegisterRoutes(s.Router, middlewares...)
 }
 
@@ -812,8 +822,12 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	s.Router = router.New()
 	// Register routes
 	err = s.RegisterRoutes(s.ctx, middlewares...)
-	// Register UI handler
-	s.RegisterUIHandler()
+	// Register UI handler (wrap with admin auth middleware if enabled)
+	if mw := handlers.AdminAuthMiddleware(s.Config); mw != nil {
+		s.RegisterUIHandler(mw)
+	} else {
+		s.RegisterUIHandler()
+	}
 	if err != nil {
 		return fmt.Errorf("failed to initialize routes: %v", err)
 	}

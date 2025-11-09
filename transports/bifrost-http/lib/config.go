@@ -166,6 +166,10 @@ type Config struct {
 
 	// Pricing manager
 	PricingManager *modelcatalog.ModelCatalog
+
+	// Admin authentication (opt-in)
+	// If AdminPassword is non-empty, management APIs and UI are protected.
+	AdminPassword string
 }
 
 var DefaultClientConfig = configstore.ClientConfig{
@@ -230,6 +234,10 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		Providers:  make(map[schemas.ModelProvider]configstore.ProviderConfig),
 		Plugins:    atomic.Pointer[[]schemas.Plugin]{},
 	}
+	// Initialize opt-in admin auth from environment (single, conventional name)
+	if v := os.Getenv("BIFROST_ADMIN_PASSWORD"); v != "" {
+		config.AdminPassword = v
+	}
 	// Getting absolute path for config file
 	absConfigFilePath, err := filepath.Abs(configFilePath)
 	if err != nil {
@@ -287,7 +295,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			}
 			// Initializing logs store
 			config.LogsStore, err = logstore.NewLogStore(ctx, logStoreConfig, logger)
-			if err != nil {				
+			if err != nil {
 				if logStoreConfig.Type == logstore.LogStoreTypeSQLite && os.IsNotExist(err) && logStoreConfig.Config.(*logstore.SQLiteConfig).Path != logsDBPath {
 					logger.Warn("failed to locate logstore file at path: %s: %v. Creating new one at path: %s", logStoreConfig.Config, err, logsDBPath)
 					// Then we will try to create a new one
