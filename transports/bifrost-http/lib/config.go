@@ -35,6 +35,10 @@ import (
 type HandlerStore interface {
 	// ShouldAllowDirectKeys returns whether direct API keys in headers are allowed
 	ShouldAllowDirectKeys() bool
+	// IsGovernanceEnabled returns whether governance is enabled
+	IsGovernanceEnabled() bool
+	// GetConfigStore returns the underlying config store (may be nil)
+	GetConfigStore() configstore.ConfigStore
 }
 
 // ConfigData represents the configuration data for the Bifrost HTTP transport.
@@ -1029,6 +1033,16 @@ func (c *Config) GetProviderConfigRaw(provider schemas.ModelProvider) (*configst
 // reads are atomic and won't cause panics.
 func (c *Config) ShouldAllowDirectKeys() bool {
 	return c.ClientConfig.AllowDirectKeys
+}
+
+// IsGovernanceEnabled returns whether governance is enabled
+func (c *Config) IsGovernanceEnabled() bool {
+	return c.ClientConfig.EnableGovernance
+}
+
+// GetConfigStore returns the underlying config store
+func (c *Config) GetConfigStore() configstore.ConfigStore {
+	return c.ConfigStore
 }
 
 // GetLoadedPlugins returns the current snapshot of loaded plugins.

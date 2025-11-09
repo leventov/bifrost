@@ -391,6 +391,8 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 			g.sendError(ctx, config.ErrorConverter, bifrostErr)
 			return
 		}
+			// Apply governance-aware filtering when VK is present
+			lib.FilterModelsByVirtualKey(requestCtx, g.handlerStore, listModelsResponse)
 
 		if config.PostCallback != nil {
 			if err := config.PostCallback(ctx, req, listModelsResponse); err != nil {
